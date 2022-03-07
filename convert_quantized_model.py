@@ -62,6 +62,7 @@ def main():
                     scales.append(None)
                     zero_points.append(None)
             new_nodes.extend(quantized_add(node, scales, zero_points, True))
+        '''
         elif node.op == "MaxPool":
             previous_node = graph.nodes[output_to_nodes[node.inputs[0].name][0]]
             if previous_node.op in ["QuantizeLinear", "DequantizeLinear"]:
@@ -71,6 +72,7 @@ def main():
                 scale = None
                 zero_point = None
             new_nodes.extend(quantized_maxpool(node, scale, zero_point))
+        '''
 
     graph.nodes.extend(new_nodes)
 
