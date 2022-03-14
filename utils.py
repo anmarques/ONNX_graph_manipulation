@@ -2,6 +2,7 @@ def connectivity(graph):
     input_to_nodes = {}
     output_to_nodes = {}
     node_name_to_id = {}
+    tensor_name_to_tensor = {}
     for node_id, node in enumerate(graph.nodes):
         node_name_to_id['node.name'] = node_id
         for var in node.inputs:
@@ -9,13 +10,17 @@ def connectivity(graph):
                 input_to_nodes[var.name].append(node_id)
             else:
                 input_to_nodes[var.name] = [node_id]
+            if var.name not in tensor_name_to_tensor:
+                tensor_name_to_tensor[var.name] = var
         for var in node.outputs:
             if var.name in output_to_nodes:
                 output_to_nodes[var.name].append(node_id)
             else:
                 output_to_nodes[var.name] = [node_id]
+            if var.name not in tensor_name_to_tensor:
+                tensor_name_to_tensor[var.name] = var
 
-    return input_to_nodes, output_to_nodes, node_name_to_id
+    return input_to_nodes, output_to_nodes, node_name_to_id, tensor_name_to_tensor
 
 
 def replace_node(graph, to_replace, new_nodes):
