@@ -44,7 +44,7 @@ def main():
             new_nodes.extend(q_linear_conv_to_integer(node))
     graph.nodes.extend(new_nodes)
 
-    input_to_nodes, output_to_nodes, node_name_to_id = connectivity(graph)
+    input_to_nodes, output_to_nodes, node_name_to_id, _ = connectivity(graph)
 
     new_nodes = []
     for node in graph.nodes:
