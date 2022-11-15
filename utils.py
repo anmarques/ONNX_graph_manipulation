@@ -4,7 +4,7 @@ def connectivity(graph):
     node_name_to_id = {}
     tensor_name_to_tensor = {}
     for node_id, node in enumerate(graph.nodes):
-        node_name_to_id['node.name'] = node_id
+        node_name_to_id[node.name] = node_id
         for var in node.inputs:
             if var.name in input_to_nodes:
                 input_to_nodes[var.name].append(node_id)
