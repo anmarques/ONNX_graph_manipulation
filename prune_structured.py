@@ -9,6 +9,7 @@ def main():
     parser = argparse.ArgumentParser(description='Removes quantization preceding residual connections')
     parser.add_argument('-i', '--input', type=str, help='input file name')
     parser.add_argument('-o', '--output', type=str, help='output file name')
+    parser.add_argument('-s', '--sparsity-limit', type=float, default=100.0, help='weight sparsity threshold to prune a channel')
     args = parser.parse_args()
 
     graph = gs.import_onnx(onnx.load(args.input))
@@ -66,7 +67,7 @@ def main():
             if len(node.inputs) == 3:
                 node.inputs[2].values += out
             else:
-                bias = gs.Constant(name=node.name+".bias", values=out)
+                bias = gs.Constant(name=node.name + ".bias", values=out)
                 node.inputs.append(bias)
 
         node.inputs[1].values = node.inputs[1].values[:, features_to_keep, :, :]
@@ -87,6 +88,26 @@ def main():
         n_input_features = node.inputs[3].shape[1]
         features_to_keep = np.ones((n_input_features,), dtype=bool)
         features_to_keep[features] = False
+        if type(floating_bias[node.inputs[0].name]) is not float:
+            kh, kw = node.attrs["kernel_shape"]
+            w_scale = node.inputs[4].values
+            w_zero_point = node.inputs[5].values
+            w_quant = node.inputs[3].values[:, np.logical_not(features_to_keep), :, :]
+            w_float = (w_quant.astype(np.float32) - w_zero_point.astype(np.float32)) * w_scale
+            w_float = torch.tensor(w_float)
+            inp = np.reshape(floating_bias[node.inputs[0].name], (1, -1, 1, 1))
+            inp = np.tile(inp, (1, 1, kh, kw))
+            inp = torch.tensor(inp)
+            out_float = torch.nn.functional.conv2d(inp, w_float).numpy().flatten()
+            x_scale = node.inputs[1].values
+            bias_scale = w_scale * x_scale
+            out_quant = np.round(out_float / bias_scale).astype(np.int32)
+            if len(node.inputs) == 9:
+                node.inputs[8].values += out_quant
+            else:
+                bias = gs.Constant(name=node.name + ".bias", values=out_quant)
+                node.inputs.append(bias)
+
         node.inputs[3].values = node.inputs[3].values[:, features_to_keep, :, :]
 
     # Performs the actual pruning of output features on a qlinearconv node
@@ -96,6 +117,13 @@ def main():
         features_to_keep[features] = False
         node.inputs[3].values = node.inputs[3].values[features_to_keep]
         if len(node.inputs) == 9:
+            x_scale = node.inputs[1].values
+            w_scale = node.inputs[4].values
+            out_scale = x_scale * w_scale
+            bias_quant = node.inputs[8].values[np.logical_not(features_to_keep)]
+            bias_float = bias_quant.astype(np.float32) * out_scale
+            floating_bias[node.outputs[0].name] = bias_float
+            propagate_bias_downstream(node.outputs[0].name)
             node.inputs[8].values = node.inputs[8].values[features_to_keep]
 
     # Performs the actual pruning of input features on a gemm node
@@ -103,6 +131,16 @@ def main():
         n_input_features = node.inputs[1].shape[1]
         features_to_keep = np.ones((n_input_features,), dtype=bool)
         features_to_keep[features] = False
+        if type(floating_bias[node.inputs[0].name]) is not float:
+            w = node.inputs[1].values[:, np.logical_not(features_to_keep)]
+            out = np.matmul(w, floating_bias[node.inputs[0].name]).flatten()
+            if len(node.inputs) == 3:
+                node.inputs[2].values += out
+            else:
+                bias = gs.Constant(name=node.name + ".bias", values=out)
+                node.inputs.append(bias)
+
+
         node.inputs[1].values = node.inputs[1].values[:, features_to_keep]
 
     # Performs the actual pruning of features on a batchnormalization node
@@ -164,21 +202,17 @@ def main():
     # ------------
     total_features = 0
     for node in graph.nodes:
-        if node.op == "Conv":
-            w = node.inputs[1].values
+        if "Conv" in node.op:
+            if node.op == "Conv":
+                w = node.inputs[1].values
+            elif node.op == "QLinearConv":
+                w = node.inputs[3].values.astype(int) - node.inputs[5].values.astype(int)
+
             n_features = w.shape[0]
             total_features += n_features
             zero_features = np.reshape(w, (n_features, -1))
-            _features_to_prune = np.argwhere(np.amax(np.abs(zero_features), axis=-1).flatten() == 0.0).flatten()
-            if _features_to_prune.size > 0:
-                features_to_prune[node.outputs[0].name] = _features_to_prune
-                propagate_pruning_downstream(node.outputs[0].name)
-        elif node.op == "QLinearConv":
-            w = node.inputs[3].values.astype(int) - node.inputs[5].values.astype(int)
-            n_features = w.shape[0]
-            total_features += n_features
-            zero_features = np.reshape(w, (n_features, -1))
-            _features_to_prune = np.argwhere(np.amax(np.abs(zero_features), axis=-1) == 0.0).flatten()
+            threshold = int(zero_features.shape[-1] * args.sparsity_limit / 100.)
+            _features_to_prune = np.argwhere(np.count_nonzero(np.abs(zero_features) == 0, axis=-1) >= threshold).flatten()
             if _features_to_prune.size > 0:
                 features_to_prune[node.outputs[0].name] = _features_to_prune
                 propagate_pruning_downstream(node.outputs[0].name)
